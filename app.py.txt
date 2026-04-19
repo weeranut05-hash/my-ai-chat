@@ -1,0 +1,61 @@
+import streamlit as st
+import pandas as pd
+import sqlite3
+from google import genai
+from google.genai import types
+import json
+
+# --- 1. ดึง API Key จาก Secrets (ตามชีท) ---
+# ระบบจะไปอ่านค่าจากตู้เซฟของ Streamlit แทนการฝังไว้ในโค้ด
+gemini_api_key = st.secrets["gemini_api_key"]
+
+# กำหนดชื่อไฟล์ฐานข้อมูล
+DB_NAME = 'test_database.db'
+SCHEMA_FILE = 'test_schema_2026.csv'
+
+# ตั้งค่าหน้าเว็บ
+st.set_page_config(page_title="AI Data Analyst", layout="wide")
+st.title("🤖 Chat with Your Data (Gemini 2.5 Flash-lite)")
+
+# สร้าง Client
+gmn_client = genai.Client(api_key=gemini_api_key)
+
+# --- 2. ฟังก์ชันรัน Query ---
+def query_to_dataframe(sql_query):
+    conn = sqlite3.connect(DB_NAME)
+    result = pd.read_sql_query(sql_query, conn)
+    conn.close()
+    return result
+
+# --- 3. เตรียม Schema ---
+df_schema = pd.read_csv(SCHEMA_FILE)
+data_dict_text = '\n'.join('- ' + df_schema['column_name'] + ': ' + df_schema['description'])
+
+# --- 4. หน้าจอแชท ---
+user_question = st.chat_input("ถามอะไรเกี่ยวกับยอดขายดีครับ?")
+
+if user_question:
+    with st.chat_message("user"):
+        st.write(user_question)
+
+    with st.chat_message("assistant"):
+        # ขั้นตอนสร้าง SQL
+        script_prompt = f"สร้าง SQLite จาก Schema: {data_dict_text} สำหรับคำถาม: {user_question} ตอบ JSON เท่านั้น"
+        
+        response = gmn_client.models.generate_content(
+            model='gemini-2.5-flash-lite',
+            contents=script_prompt,
+            config=types.GenerateContentConfig(response_mime_type="application/json")
+        )
+        
+        sql_script = json.loads(response.text)['script']
+        st.code(sql_script, language='sql')
+        
+        # รันและสรุปคำตอบ
+        df_result = query_to_dataframe(sql_script)
+        
+        answer_prompt = f"สรุปข้อมูลนี้เป็นภาษาไทย: {df_result.to_string()} จากคำถาม: {user_question}"
+        final_answer = gmn_client.models.generate_content(model='gemini-2.5-flash-lite', contents=answer_prompt)
+        
+        st.write(final_answer.text)
+        st.dataframe(df_result)
